@@ -15,7 +15,7 @@ let tahta = [];
 let seciliKare = null;
 let siraBeyazda = true;
 let hedefSehir = null;
-let fethedilenler = ['ankara'];
+let fethedilenler = JSON.parse(localStorage.getItem('fethedilen_iller')) || ['ankara'];
 
 const tumIller = Array.from(document.querySelectorAll('#iller path'));
 
@@ -59,9 +59,16 @@ function haritaSiniflariniGuncelle() {
 }
 
 async function haritayiGuncelle() {
-  const yanit = await fetch('/api/durum');
-  const veri = await yanit.json();
-  fethedilenler = veri.fethedilenler;
+  try {
+    const yanit = await fetch('/api/durum');
+    if (yanit.ok) {
+      const veri = await yanit.json();
+      if (Array.isArray(veri.fethedilenler) && veri.fethedilenler.length > 0) {
+        fethedilenler = Array.from(new Set([...fethedilenler, ...veri.fethedilenler]));
+        localStorage.setItem('fethedilen_iller', JSON.stringify(fethedilenler));
+      }
+    }
+  } catch (err) {}
   haritaSiniflariniGuncelle();
   ilListesiniDoldur();
 }
@@ -103,8 +110,8 @@ function tahtayiSifirla() {
 const beyazMi = (t) => t !== '' && t === t.toUpperCase();
 const siyahMi = (t) => t !== '' && t === t.toLowerCase();
 
-function gecerliHamleler(r, c) {
-  const tas = tahta[r][c];
+function gecerliHamleler(r, c, mevcutTahta = tahta) {
+  const tas = mevcutTahta[r][c];
   if (!tas) return [];
   const hamleler = [];
   const beyaz = beyazMi(tas);
@@ -112,7 +119,7 @@ function gecerliHamleler(r, c) {
 
   const ekle = (nr, nc) => {
     if (nr < 0 || nr > 7 || nc < 0 || nc > 7) return false;
-    const hedef = tahta[nr][nc];
+    const hedef = mevcutTahta[nr][nc];
     if (hedef === '') { hamleler.push([nr, nc]); return true; }
     if (beyaz ? siyahMi(hedef) : beyazMi(hedef)) { hamleler.push([nr, nc]); }
     return false;
@@ -121,13 +128,17 @@ function gecerliHamleler(r, c) {
   if (tip === 'p') {
     const yon = beyaz ? -1 : 1;
     const baslangic = beyaz ? 6 : 1;
-    if (tahta[r + yon]?.[c] === '') {
+    if (mevcutTahta[r + yon]?.[c] === '') {
       hamleler.push([r + yon, c]);
-      if (r === baslangic && tahta[r + 2 * yon]?.[c] === '') hamleler.push([r + 2 * yon, c]);
+      if (r === baslangic && mevcutTahta[r + 2 * yon]?.[c] === '') {
+        hamleler.push([r + 2 * yon, c]);
+      }
     }
     [-1, 1].forEach(dc => {
-      const hedef = tahta[r + yon]?.[c + dc];
-      if (hedef && (beyaz ? siyahMi(hedef) : beyazMi(hedef))) hamleler.push([r + yon, c + dc]);
+      const hedef = mevcutTahta[r + yon]?.[c + dc];
+      if (hedef && (beyaz ? siyahMi(hedef) : beyazMi(hedef))) {
+        hamleler.push([r + yon, c + dc]);
+      }
     });
   }
 
@@ -141,7 +152,9 @@ function gecerliHamleler(r, c) {
 
   if (['r', 'b', 'q'].includes(tip)) {
     yonler[tip].forEach(([dr, dc]) => {
-      for (let i = 1; i < 8; i++) if (!ekle(r + dr * i, c + dc * i)) break;
+      for (let i = 1; i < 8; i++) {
+        if (!ekle(r + dr * i, c + dc * i)) break;
+      }
     });
   } else if (['n', 'k'].includes(tip)) {
     yonler[tip].forEach(([dr, dc]) => ekle(r + dr, c + dc));
@@ -158,8 +171,12 @@ function tahtayiCiz() {
     for (let c = 0; c < 8; c++) {
       const kare = document.createElement('div');
       kare.className = `kare ${(r + c) % 2 === 0 ? 'acik' : 'koyu'}`;
-      if (seciliKare && seciliKare[0] === r && seciliKare[1] === c) kare.classList.add('secili');
-      if (olasiHamleler.some(([hr, hc]) => hr === r && hc === c)) kare.classList.add('hamle-izi');
+      if (seciliKare && seciliKare[0] === r && seciliKare[1] === c) {
+        kare.classList.add('secili');
+      }
+      if (olasiHamleler.some(([hr, hc]) => hr === r && hc === c)) {
+        kare.classList.add('hamle-izi');
+      }
 
       kare.textContent = TASLAR[tahta[r][c]] || '';
       kare.addEventListener('click', () => kareyeTiklandi(r, c));
@@ -168,7 +185,7 @@ function tahtayiCiz() {
   }
 }
 
-function kareyeTiklandi(r, c) {
+async function kareyeTiklandi(r, c) {
   if (!hedefSehir) {
     durumEl.textContent = 'Önce haritadan fethedeceğiniz ili seçin!';
     return;
@@ -182,9 +199,14 @@ function kareyeTiklandi(r, c) {
       hamleYap(sr, sc, r, c);
       seciliKare = null;
       tahtayiCiz();
-      if (!oyunBittiMi()) {
+
+      const bitti = await oyunBittiMi();
+      if (!bitti) {
         siraBeyazda = false;
-        setTimeout(bilgisayarHamlesi, 350);
+        durumEl.textContent = `${hedefSehir.ad} savunması düşünüyor...`;
+        setTimeout(() => {
+          bilgisayarHamlesi();
+        }, 400);
       }
       return;
     }
@@ -202,30 +224,65 @@ function hamleYap(sr, sc, hr, hc) {
   tahta[sr][sc] = '';
 }
 
-function bilgisayarHamlesi() {
+async function bilgisayarHamlesi() {
   let tumHamleler = [];
+
   for (let r = 0; r < 8; r++) {
     for (let c = 0; c < 8; c++) {
       if (siyahMi(tahta[r][c])) {
-        gecerliHamleler(r, c).forEach(([hr, hc]) => {
+        const hamleListesi = gecerliHamleler(r, c);
+        hamleListesi.forEach(([hr, hc]) => {
           const hedefTas = tahta[hr][hc];
-          const deger = hedefTas ? PUAN[hedefTas.toLowerCase()] : 0;
-          tumHamleler.push({ sr: r, sc: c, hr, hc, deger });
+          let skor = hedefTas ? PUAN[hedefTas.toLowerCase()] : 0;
+
+          if ((hr === 3 || hr === 4) && (hc === 3 || hc === 4)) {
+            skor += 2;
+          }
+
+          const kopyaTahta = tahta.map(satir => [...satir]);
+          kopyaTahta[hr][hc] = kopyaTahta[r][c];
+          kopyaTahta[r][c] = '';
+
+          let maxTehdit = 0;
+          for (let br = 0; br < 8; br++) {
+            for (let bc = 0; bc < 8; bc++) {
+              if (beyazMi(kopyaTahta[br][bc])) {
+                gecerliHamleler(br, bc, kopyaTahta).forEach(([thr, thc]) => {
+                  const tehditEdilen = kopyaTahta[thr][thc];
+                  if (tehditEdilen && siyahMi(tehditEdilen)) {
+                    const kayip = PUAN[tehditEdilen];
+                    if (kayip > maxTehdit) maxTehdit = kayip;
+                  }
+                });
+              }
+            }
+          }
+
+          skor -= maxTehdit * 0.8;
+          tumHamleler.push({ sr: r, sc: c, hr, hc, skor });
         });
       }
     }
   }
 
-  if (tumHamleler.length === 0) return;
-  tumHamleler.sort((a, b) => b.deger - a.deger);
-  const enIyiPuan = tumHamleler[0].deger;
-  const adaylar = tumHamleler.filter(h => h.deger === enIyiPuan);
+  if (tumHamleler.length === 0) {
+    await sehriFethet();
+    return;
+  }
+
+  tumHamleler.sort((a, b) => b.skor - a.skor);
+  const enIyiSkor = tumHamleler[0].skor;
+  const adaylar = tumHamleler.filter(h => h.skor === enIyiSkor);
   const secim = adaylar[Math.floor(Math.random() * adaylar.length)];
 
   hamleYap(secim.sr, secim.sc, secim.hr, secim.hc);
-  siraBeyazda = true;
   tahtayiCiz();
-  oyunBittiMi();
+
+  const bitti = await oyunBittiMi();
+  if (!bitti) {
+    siraBeyazda = true;
+    durumEl.textContent = `Sıra sizde! (${hedefSehir.ad} kuşatması sürüyor)`;
+  }
 }
 
 async function oyunBittiMi() {
@@ -235,7 +292,7 @@ async function oyunBittiMi() {
     return true;
   }
   if (!duzTahta.includes('K')) {
-    durumEl.textContent = `Yenildiniz! ${hedefSehir.ad} savunmayı kazandı. Tekrar deneyin.`;
+    durumEl.textContent = `Yenildiniz! ${hedefSehir.ad} savunmayı kazandı. Tahtayı sıfırlayıp tekrar deneyin.`;
     siraBeyazda = false;
     return true;
   }
@@ -244,25 +301,43 @@ async function oyunBittiMi() {
 
 async function sehriFethet() {
   if (!hedefSehir) return;
-  await fetch('/api/fethet', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sehirId: hedefSehir.id })
-  });
-  durumEl.textContent = `ZAFER! ${hedefSehir.ad} fethedildi! Haritadan yeni hedef seçin.`;
+  const fethedilenId = hedefSehir.id;
+  const fethedilenAd = hedefSehir.ad;
+
+  if (!fethedilenler.includes(fethedilenId)) {
+    fethedilenler.push(fethedilenId);
+    localStorage.setItem('fethedilen_iller', JSON.stringify(fethedilenler));
+  }
+
+  try {
+    await fetch('/api/fethet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sehirId: fethedilenId })
+    });
+  } catch (err) {}
+
+  durumEl.textContent = `ZAFER! ${fethedilenAd} fethedildi! Haritadan yeni hedef seçin.`;
   hedefSehir = null;
   aktifSehirEl.textContent = 'Seçilmedi';
-  await haritayiGuncelle();
+  haritaSiniflariniGuncelle();
+  ilListesiniDoldur();
 }
 
 document.getElementById('yeniden-baslat').addEventListener('click', tahtayiSifirla);
 document.getElementById('hizli-zafer').addEventListener('click', sehriFethet);
 document.getElementById('fetih-sifirla').addEventListener('click', async () => {
-  await fetch('/api/sifirla', { method: 'POST' });
+  fethedilenler = ['ankara'];
+  localStorage.setItem('fethedilen_iller', JSON.stringify(fethedilenler));
+  try {
+    await fetch('/api/sifirla', { method: 'POST' });
+  } catch (err) {}
+
   hedefSehir = null;
   aktifSehirEl.textContent = 'Seçilmedi';
   durumEl.textContent = 'Tüm fetihler sıfırlandı. Ankara başkent olarak yeniden başladı!';
-  await haritayiGuncelle();
+  haritaSiniflariniGuncelle();
+  ilListesiniDoldur();
   tahtayiSifirla();
 });
 
